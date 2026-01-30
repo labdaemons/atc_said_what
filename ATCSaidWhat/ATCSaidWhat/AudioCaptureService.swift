@@ -116,6 +116,28 @@ final class AudioCaptureService {
         bufferLock.unlock()
     }
 
+    /// Calculate the RMS (root mean square) audio level for the last N seconds
+    /// - Parameter seconds: Duration to analyze
+    /// - Returns: RMS value (0.0 to 1.0 range, typically much lower)
+    func getAudioLevel(forLast seconds: Double) -> Float {
+        let samples = getRecentAudio(seconds: seconds)
+        guard !samples.isEmpty else { return 0 }
+
+        let sumOfSquares = samples.reduce(0.0) { $0 + Double($1 * $1) }
+        let rms = sqrt(sumOfSquares / Double(samples.count))
+        return Float(rms)
+    }
+
+    /// Check if the audio has been silent for the specified duration
+    /// - Parameters:
+    ///   - seconds: Duration to check for silence
+    ///   - threshold: RMS threshold below which audio is considered silent (default 0.01)
+    /// - Returns: True if audio level is below threshold for the duration
+    func isSilent(forLast seconds: Double, threshold: Float = 0.01) -> Bool {
+        let level = getAudioLevel(forLast: seconds)
+        return level < threshold
+    }
+
     private func setupAudioSession() throws {
         let audioSession = AVAudioSession.sharedInstance()
         do {

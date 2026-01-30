@@ -72,11 +72,18 @@ final class TranscriptionViewModel: ObservableObject {
 
     private var audioLevelTimer: Timer?
     private var keywordDetectionTimer: Timer?
+    private var silenceDetectionTimer: Timer?
+    private var recordingStartTime: Date?
 
     // Configuration for keyword detection
     private let keywordCheckInterval: TimeInterval = 2.0  // Check every 2 seconds
     private let keywordAudioWindow: Double = 4.0          // Analyze last 4 seconds for keyword
-    private let postKeywordRecordingDuration: Double = 8.0 // Record 8 more seconds after keyword
+
+    // Configuration for silence detection
+    private let silenceDuration: Double = 1.0             // Stop after 1 second of silence
+    private let silenceThreshold: Float = 0.01            // Audio level threshold for silence
+    private let silenceCheckInterval: UInt64 = 100_000_000 // Check every 0.1 seconds (in nanoseconds)
+    private let maxRecordingDuration: Double = 30.0       // Maximum recording time as safety limit
 
     private var keywordDetectionTime: Date?
 
@@ -163,11 +170,37 @@ final class TranscriptionViewModel: ObservableObject {
         keywordDetectionTime = Date()
         stopKeywordDetection()
 
-        // Continue recording for additional time to capture full transmission
-        try? await Task.sleep(nanoseconds: UInt64(postKeywordRecordingDuration * 1_000_000_000))
+        // Wait for silence to indicate end of transmission
+        await waitForSilence()
 
         // Now transcribe the full captured audio
         await transcribeFullCapture()
+    }
+
+    private func waitForSilence() async {
+        let startTime = Date()
+
+        // Poll for silence
+        while true {
+            // Safety check: don't record forever
+            let elapsed = Date().timeIntervalSince(startTime)
+            if elapsed >= maxRecordingDuration {
+                break
+            }
+
+            // Check if we have silence for the required duration
+            if audioService.isSilent(forLast: silenceDuration, threshold: silenceThreshold) {
+                // Ensure we have at least some audio (the keyword + some speech)
+                let buffer = audioService.getCurrentBuffer()
+                let minSamples = Int(AudioCaptureService.sampleRate * 2.0) // At least 2 seconds
+                if buffer.count >= minSamples {
+                    break
+                }
+            }
+
+            // Wait before checking again
+            try? await Task.sleep(nanoseconds: silenceCheckInterval)
+        }
     }
 
     private func transcribeFullCapture() async {
@@ -252,13 +285,16 @@ final class TranscriptionViewModel: ObservableObject {
         do {
             try await audioService.startRecording()
             state = .recording
+            recordingStartTime = Date()
             startAudioLevelMonitoring()
+            startSilenceDetection()
         } catch {
             state = .error(error.localizedDescription)
         }
     }
 
     private func stopRecordingAndTranscribe() async {
+        stopSilenceDetection()
         stopAudioLevelMonitoring()
         let samples = audioService.stopRecording()
 
@@ -276,6 +312,34 @@ final class TranscriptionViewModel: ObservableObject {
         } catch {
             state = .error(error.localizedDescription)
         }
+    }
+
+    private func startSilenceDetection() {
+        silenceDetectionTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.state == .recording else { return }
+
+                // Need at least 2 seconds of audio before checking for silence
+                guard let startTime = self.recordingStartTime,
+                      Date().timeIntervalSince(startTime) >= 2.0 else { return }
+
+                // Check for silence
+                if self.audioService.isSilent(forLast: self.silenceDuration, threshold: self.silenceThreshold) {
+                    await self.stopRecordingAndTranscribe()
+                }
+
+                // Safety: stop after max duration
+                if Date().timeIntervalSince(startTime) >= self.maxRecordingDuration {
+                    await self.stopRecordingAndTranscribe()
+                }
+            }
+        }
+    }
+
+    private func stopSilenceDetection() {
+        silenceDetectionTimer?.invalidate()
+        silenceDetectionTimer = nil
+        recordingStartTime = nil
     }
 
     func clearTranscription() {
