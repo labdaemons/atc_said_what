@@ -39,6 +39,7 @@ struct ContentView: View {
                 ControlButtonsView(
                     state: viewModel.state,
                     tailNumber: viewModel.tailNumber,
+                    hasContent: !viewModel.transcribedText.isEmpty || !viewModel.transcriptionHistory.isEmpty,
                     onStartListening: {
                         isTailNumberFocused = false
                         Task {
@@ -321,13 +322,33 @@ struct TranscriptionHistoryRow: View {
 struct ControlButtonsView: View {
     let state: TranscriptionState
     let tailNumber: String
+    let hasContent: Bool
     let onStartListening: () -> Void
     let onStopListening: () -> Void
     let onToggleRecording: () -> Void
     let onClear: () -> Void
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
+            // Large Clear Button - always visible when there's content
+            if hasContent {
+                Button(action: onClear) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                        Text("CLEAR")
+                            .font(.title2.bold())
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .background(Color(.systemGray4))
+                    .foregroundStyle(.primary)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+                .disabled(state != .ready && state != .listening)
+                .opacity((state == .ready || state == .listening) ? 1 : 0.5)
+            }
+
             // Primary action button (Start/Stop Listening)
             if state == .listening || state == .keywordDetected {
                 Button(action: onStopListening) {
@@ -359,38 +380,23 @@ struct ControlButtonsView: View {
                 }
             }
 
-            // Secondary controls
+            // Secondary controls (smaller)
             HStack(spacing: 24) {
-                // Clear button
-                Button(action: onClear) {
-                    VStack(spacing: 4) {
-                        Image(systemName: "trash")
-                            .font(.title2)
-                            .frame(width: 50, height: 50)
-                            .background(Color(.systemGray5))
-                            .clipShape(Circle())
-                        Text("Clear")
-                            .font(.caption2)
-                    }
-                }
-                .disabled(state != .ready)
-                .opacity(state == .ready ? 1 : 0.5)
-
                 // Manual record button
                 Button(action: onToggleRecording) {
                     VStack(spacing: 4) {
                         ZStack {
                             Circle()
                                 .fill(recordButtonColor)
-                                .frame(width: 64, height: 64)
+                                .frame(width: 56, height: 56)
 
                             if state == .recording {
                                 RoundedRectangle(cornerRadius: 4)
                                     .fill(.white)
-                                    .frame(width: 24, height: 24)
+                                    .frame(width: 20, height: 20)
                             } else {
                                 Image(systemName: "mic.fill")
-                                    .font(.title2)
+                                    .font(.title3)
                                     .foregroundStyle(.white)
                             }
                         }
@@ -402,21 +408,6 @@ struct ControlButtonsView: View {
                 .opacity(canManualRecord ? 1 : 0.5)
                 .scaleEffect(state == .recording ? 1.05 : 1.0)
                 .animation(.easeInOut(duration: 0.2), value: state)
-
-                // Copy button
-                Button(action: copyToClipboard) {
-                    VStack(spacing: 4) {
-                        Image(systemName: "doc.on.doc")
-                            .font(.title2)
-                            .frame(width: 50, height: 50)
-                            .background(Color(.systemGray5))
-                            .clipShape(Circle())
-                        Text("Copy")
-                            .font(.caption2)
-                    }
-                }
-                .disabled(state != .ready)
-                .opacity(state == .ready ? 1 : 0.5)
             }
             .foregroundStyle(.primary)
         }
@@ -435,10 +426,6 @@ struct ControlButtonsView: View {
         default:
             return .gray
         }
-    }
-
-    private func copyToClipboard() {
-        UIPasteboard.general.string = ""
     }
 }
 
