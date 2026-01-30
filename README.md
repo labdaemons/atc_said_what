@@ -1,0 +1,85 @@
+# ATC Said What
+
+An iOS app that transcribes audio from the microphone to text using the Whisper AI model, running entirely offline on-device.
+
+## Features
+
+- Real-time audio capture from the device microphone
+- On-device speech-to-text transcription using Whisper
+- No internet connection required after initial setup
+- Clean SwiftUI interface with recording status and audio level visualization
+- Copy transcription results to clipboard
+
+## Requirements
+
+- iOS 17.0+
+- Xcode 15.0+
+- A Whisper model file (see setup instructions)
+
+## Setup
+
+### 1. Clone and Open Project
+
+```bash
+git clone <repository-url>
+cd atc_said_what
+open ATCSaidWhat/ATCSaidWhat.xcodeproj
+```
+
+### 2. Download Whisper Model
+
+Download a Whisper model file from the [whisper.cpp releases](https://huggingface.co/ggerganov/whisper.cpp/tree/main) or convert one yourself.
+
+Recommended models for iOS:
+- `ggml-tiny.bin` (~75MB) - Fastest, lower accuracy
+- `ggml-base.bin` (~142MB) - Good balance (recommended)
+- `ggml-small.bin` (~466MB) - Better accuracy, slower
+
+### 3. Add Model to Xcode Project
+
+1. Download your chosen model (e.g., `ggml-base.bin`)
+2. Drag the model file into the Xcode project navigator
+3. Ensure "Copy items if needed" is checked
+4. Ensure the file is added to the "ATCSaidWhat" target
+
+### 4. Build and Run
+
+1. Select your target device (iPhone or iPad)
+2. Build and run (Cmd+R)
+3. Grant microphone permission when prompted
+
+## Usage
+
+1. **Start Recording**: Tap the microphone button to begin recording
+2. **Speak**: Speak clearly into the device microphone
+3. **Stop & Transcribe**: Tap the stop button to end recording and begin transcription
+4. **View Results**: The transcribed text will appear in the main text area
+5. **Copy**: Use the copy button to copy the transcription to clipboard
+6. **Clear**: Use the trash button to clear the current transcription
+
+## Architecture
+
+```
+ATCSaidWhat/
+├── ATCSaidWhatApp.swift          # App entry point
+├── ContentView.swift             # Main SwiftUI interface
+├── TranscriptionViewModel.swift  # Business logic & state management
+├── AudioCaptureService.swift     # Microphone audio capture (AVFoundation)
+├── WhisperTranscriptionService.swift  # Whisper model wrapper
+├── Info.plist                    # App configuration & permissions
+└── Assets.xcassets/              # App icons & colors
+```
+
+## Dependencies
+
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - C/C++ port of OpenAI's Whisper model with Swift bindings
+
+## Privacy
+
+- All audio processing happens entirely on-device
+- No audio data is sent to any server
+- No network connection required for transcription
+
+## License
+
+MIT License
