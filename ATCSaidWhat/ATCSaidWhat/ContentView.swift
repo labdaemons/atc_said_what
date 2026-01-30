@@ -28,6 +28,8 @@ struct ContentView: View {
                 // Transcription display
                 TranscriptionTextView(
                     text: viewModel.transcribedText,
+                    liveText: viewModel.liveTranscription,
+                    isLive: viewModel.state == .recording || viewModel.state == .keywordDetected,
                     history: viewModel.transcriptionHistory
                 )
 
@@ -197,12 +199,44 @@ struct AudioLevelView: View {
 
 struct TranscriptionTextView: View {
     let text: String
+    let liveText: String
+    let isLive: Bool
     let history: [TranscriptionEntry]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if text.isEmpty && history.isEmpty {
+                // Live transcription (shown during recording)
+                if isLive {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 8, height: 8)
+                            Text("Live")
+                                .font(.caption.bold())
+                                .foregroundStyle(.red)
+                        }
+
+                        if liveText.isEmpty {
+                            Text("Listening...")
+                                .font(.body)
+                                .foregroundStyle(.tertiary)
+                                .italic()
+                        } else {
+                            Text(liveText)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(Color.red.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .animation(.easeInOut(duration: 0.2), value: liveText)
+                }
+
+                if !isLive && text.isEmpty && history.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "waveform.badge.mic")
                             .font(.largeTitle)
@@ -215,8 +249,8 @@ struct TranscriptionTextView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 40)
-                } else {
-                    // Current transcription
+                } else if !isLive {
+                    // Current transcription (shown after recording stops)
                     if !text.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Latest Transcription")

@@ -52,6 +52,7 @@ final class TranscriptionViewModel: ObservableObject {
 
     @Published private(set) var state: TranscriptionState = .idle
     @Published private(set) var transcribedText: String = ""
+    @Published private(set) var liveTranscription: String = ""  // Real-time transcription during recording
     @Published private(set) var segments: [TranscriptionSegment] = []
     @Published private(set) var audioLevel: Float = 0.0
     @Published var tailNumber: String = "" {
@@ -73,7 +74,9 @@ final class TranscriptionViewModel: ObservableObject {
     private var audioLevelTimer: Timer?
     private var keywordDetectionTimer: Timer?
     private var silenceDetectionTimer: Timer?
+    private var liveTranscriptionTimer: Timer?
     private var recordingStartTime: Date?
+    private var isTranscribing = false  // Prevent overlapping transcription calls
 
     // Configuration for keyword detection
     private let keywordCheckInterval: TimeInterval = 2.0  // Check every 2 seconds
@@ -84,6 +87,9 @@ final class TranscriptionViewModel: ObservableObject {
     private let silenceThreshold: Float = 0.01            // Audio level threshold for silence
     private let silenceCheckInterval: UInt64 = 100_000_000 // Check every 0.1 seconds (in nanoseconds)
     private let maxRecordingDuration: Double = 30.0       // Maximum recording time as safety limit
+
+    // Configuration for live transcription
+    private let liveTranscriptionInterval: TimeInterval = 1.0  // Transcribe every 1 second
 
     private var keywordDetectionTime: Date?
 
@@ -168,10 +174,17 @@ final class TranscriptionViewModel: ObservableObject {
     private func onKeywordDetected() async {
         state = .keywordDetected
         keywordDetectionTime = Date()
+        liveTranscription = ""
         stopKeywordDetection()
+
+        // Start live transcription while waiting for silence
+        startLiveTranscription()
 
         // Wait for silence to indicate end of transmission
         await waitForSilence()
+
+        // Stop live transcription before final transcription
+        stopLiveTranscription()
 
         // Now transcribe the full captured audio
         await transcribeFullCapture()
@@ -209,13 +222,16 @@ final class TranscriptionViewModel: ObservableObject {
         let samples = audioService.stopRecording()
 
         guard !samples.isEmpty else {
+            liveTranscription = ""
             state = .ready
             return
         }
 
         do {
+            // Final transcription pass for accuracy
             let text = try await whisperService.transcribe(samples: samples)
             transcribedText = text
+            liveTranscription = ""
 
             // Add to history
             let entry = TranscriptionEntry(
@@ -286,8 +302,10 @@ final class TranscriptionViewModel: ObservableObject {
             try await audioService.startRecording()
             state = .recording
             recordingStartTime = Date()
+            liveTranscription = ""
             startAudioLevelMonitoring()
             startSilenceDetection()
+            startLiveTranscription()
         } catch {
             state = .error(error.localizedDescription)
         }
@@ -295,10 +313,12 @@ final class TranscriptionViewModel: ObservableObject {
 
     private func stopRecordingAndTranscribe() async {
         stopSilenceDetection()
+        stopLiveTranscription()
         stopAudioLevelMonitoring()
         let samples = audioService.stopRecording()
 
         guard !samples.isEmpty else {
+            liveTranscription = ""
             state = .ready
             return
         }
@@ -306,8 +326,10 @@ final class TranscriptionViewModel: ObservableObject {
         state = .transcribing
 
         do {
+            // Final transcription pass for accuracy
             let text = try await whisperService.transcribe(samples: samples)
             transcribedText = text
+            liveTranscription = ""
             state = .ready
         } catch {
             state = .error(error.localizedDescription)
@@ -340,6 +362,44 @@ final class TranscriptionViewModel: ObservableObject {
         silenceDetectionTimer?.invalidate()
         silenceDetectionTimer = nil
         recordingStartTime = nil
+    }
+
+    // MARK: - Live Transcription
+
+    private func startLiveTranscription() {
+        liveTranscriptionTimer = Timer.scheduledTimer(withTimeInterval: liveTranscriptionInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.performLiveTranscription()
+            }
+        }
+    }
+
+    private func stopLiveTranscription() {
+        liveTranscriptionTimer?.invalidate()
+        liveTranscriptionTimer = nil
+        isTranscribing = false
+    }
+
+    private func performLiveTranscription() async {
+        // Prevent overlapping transcription calls
+        guard !isTranscribing else { return }
+        guard state == .recording || state == .keywordDetected else { return }
+
+        let samples = audioService.getCurrentBuffer()
+        guard samples.count > Int(AudioCaptureService.sampleRate * 0.5) else { return } // Need at least 0.5 seconds
+
+        isTranscribing = true
+        defer { isTranscribing = false }
+
+        do {
+            let text = try await whisperService.transcribe(samples: samples)
+            // Only update if we're still recording
+            if state == .recording || state == .keywordDetected {
+                liveTranscription = text
+            }
+        } catch {
+            // Silently continue on transcription errors during live mode
+        }
     }
 
     func clearTranscription() {

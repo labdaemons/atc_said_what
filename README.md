@@ -6,6 +6,7 @@ An iOS app that transcribes audio from the microphone to text using the Whisper 
 
 - **Callsign/Tail Number Detection**: Enter your aircraft tail number (e.g., "N12345") and the app will continuously listen for ATC communications mentioning your callsign
 - **Automatic Transcription**: When your callsign is detected, the app automatically captures and transcribes the full transmission
+- **Real-Time Transcription**: See live transcription as you speak - text appears and updates every second during recording
 - **Silence Detection**: Recording automatically stops after 1 second of silence, capturing complete transmissions without manual intervention
 - **Phonetic Alphabet Support**: Recognizes both standard callsigns and NATO phonetic alphabet variations (e.g., "November One Two Three Four Five")
 - **Manual Recording Mode**: Also supports traditional push-to-record transcription
