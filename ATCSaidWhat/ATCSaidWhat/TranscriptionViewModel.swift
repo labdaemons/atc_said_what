@@ -6,7 +6,9 @@ enum TranscriptionState: Equatable {
     case idle
     case loadingModel
     case ready
-    case recording
+    case listening          // Continuously listening for keyword
+    case keywordDetected    // Keyword found, capturing full transmission
+    case recording          // Manual recording mode
     case transcribing
     case error(String)
 
@@ -17,7 +19,11 @@ enum TranscriptionState: Equatable {
         case .loadingModel:
             return "Loading Whisper model..."
         case .ready:
-            return "Ready to record"
+            return "Ready"
+        case .listening:
+            return "Listening for callsign..."
+        case .keywordDetected:
+            return "Callsign detected! Recording..."
         case .recording:
             return "Recording..."
         case .transcribing:
@@ -30,6 +36,7 @@ enum TranscriptionState: Equatable {
     static func == (lhs: TranscriptionState, rhs: TranscriptionState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle), (.loadingModel, .loadingModel), (.ready, .ready),
+             (.listening, .listening), (.keywordDetected, .keywordDetected),
              (.recording, .recording), (.transcribing, .transcribing):
             return true
         case (.error(let lhsMsg), .error(let rhsMsg)):
@@ -47,11 +54,31 @@ final class TranscriptionViewModel: ObservableObject {
     @Published private(set) var transcribedText: String = ""
     @Published private(set) var segments: [TranscriptionSegment] = []
     @Published private(set) var audioLevel: Float = 0.0
+    @Published var tailNumber: String = "" {
+        didSet {
+            // Normalize tail number (uppercase, no spaces)
+            let normalized = tailNumber.uppercased().replacingOccurrences(of: " ", with: "")
+            if normalized != tailNumber {
+                tailNumber = normalized
+            }
+        }
+    }
+
+    // History of transcriptions when keyword is detected
+    @Published private(set) var transcriptionHistory: [TranscriptionEntry] = []
 
     private let audioService = AudioCaptureService()
     private let whisperService = WhisperTranscriptionService()
 
     private var audioLevelTimer: Timer?
+    private var keywordDetectionTimer: Timer?
+
+    // Configuration for keyword detection
+    private let keywordCheckInterval: TimeInterval = 2.0  // Check every 2 seconds
+    private let keywordAudioWindow: Double = 4.0          // Analyze last 4 seconds for keyword
+    private let postKeywordRecordingDuration: Double = 8.0 // Record 8 more seconds after keyword
+
+    private var keywordDetectionTime: Date?
 
     init() {
         Task {
@@ -63,16 +90,150 @@ final class TranscriptionViewModel: ObservableObject {
         state = .loadingModel
 
         do {
-            // Try to load model - user needs to add the model file to the bundle
             try await whisperService.loadModel(named: "ggml-base")
             state = .ready
         } catch WhisperError.modelNotFound {
-            // Model not found - show instructions
             state = .error("Model not found. Please add ggml-base.bin to the app bundle.")
         } catch {
             state = .error(error.localizedDescription)
         }
     }
+
+    // MARK: - Keyword Listening Mode
+
+    func startListening() async {
+        guard state == .ready, !tailNumber.isEmpty else { return }
+
+        do {
+            try await audioService.startRecording()
+            state = .listening
+            startKeywordDetection()
+            startAudioLevelMonitoring()
+        } catch {
+            state = .error(error.localizedDescription)
+        }
+    }
+
+    func stopListening() {
+        stopKeywordDetection()
+        stopAudioLevelMonitoring()
+        _ = audioService.stopRecording()
+        state = .ready
+    }
+
+    private func startKeywordDetection() {
+        keywordDetectionTimer = Timer.scheduledTimer(withTimeInterval: keywordCheckInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.checkForKeyword()
+            }
+        }
+    }
+
+    private func stopKeywordDetection() {
+        keywordDetectionTimer?.invalidate()
+        keywordDetectionTimer = nil
+    }
+
+    private func checkForKeyword() async {
+        guard state == .listening else { return }
+
+        // Get recent audio for keyword detection
+        let recentAudio = audioService.getRecentAudio(seconds: keywordAudioWindow)
+        guard recentAudio.count > Int(AudioCaptureService.sampleRate) else { return } // Need at least 1 second
+
+        do {
+            let text = try await whisperService.transcribe(samples: recentAudio)
+            let normalizedText = normalizeForComparison(text)
+            let normalizedKeyword = normalizeForComparison(tailNumber)
+
+            if normalizedText.contains(normalizedKeyword) {
+                // Keyword detected!
+                await onKeywordDetected()
+            } else {
+                // Trim buffer to prevent unbounded growth, keep enough for context
+                audioService.trimBuffer(keepingLast: keywordAudioWindow + 2.0)
+            }
+        } catch {
+            // Silently continue listening on transcription errors
+        }
+    }
+
+    private func onKeywordDetected() async {
+        state = .keywordDetected
+        keywordDetectionTime = Date()
+        stopKeywordDetection()
+
+        // Continue recording for additional time to capture full transmission
+        try? await Task.sleep(nanoseconds: UInt64(postKeywordRecordingDuration * 1_000_000_000))
+
+        // Now transcribe the full captured audio
+        await transcribeFullCapture()
+    }
+
+    private func transcribeFullCapture() async {
+        state = .transcribing
+
+        let samples = audioService.stopRecording()
+
+        guard !samples.isEmpty else {
+            state = .ready
+            return
+        }
+
+        do {
+            let text = try await whisperService.transcribe(samples: samples)
+            transcribedText = text
+
+            // Add to history
+            let entry = TranscriptionEntry(
+                timestamp: Date(),
+                tailNumber: tailNumber,
+                transcription: text
+            )
+            transcriptionHistory.insert(entry, at: 0)
+
+            state = .ready
+        } catch {
+            state = .error(error.localizedDescription)
+        }
+    }
+
+    /// Normalize text for keyword comparison (handles phonetic variations)
+    private func normalizeForComparison(_ text: String) -> String {
+        var normalized = text.uppercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+
+        // Handle common phonetic alphabet substitutions
+        let phoneticNumbers: [String: String] = [
+            "ZERO": "0", "ONE": "1", "TWO": "2", "THREE": "3",
+            "FOUR": "4", "FIVE": "5", "SIX": "6", "SEVEN": "7",
+            "EIGHT": "8", "NINER": "9", "NINE": "9"
+        ]
+
+        for (word, digit) in phoneticNumbers {
+            normalized = normalized.replacingOccurrences(of: word, with: digit)
+        }
+
+        // Handle phonetic letters (NATO alphabet)
+        let phoneticLetters: [String: String] = [
+            "ALPHA": "A", "BRAVO": "B", "CHARLIE": "C", "DELTA": "D",
+            "ECHO": "E", "FOXTROT": "F", "GOLF": "G", "HOTEL": "H",
+            "INDIA": "I", "JULIET": "J", "JULIETT": "J", "KILO": "K",
+            "LIMA": "L", "MIKE": "M", "NOVEMBER": "N", "OSCAR": "O",
+            "PAPA": "P", "QUEBEC": "Q", "ROMEO": "R", "SIERRA": "S",
+            "TANGO": "T", "UNIFORM": "U", "VICTOR": "V", "WHISKEY": "W",
+            "XRAY": "X", "X-RAY": "X", "YANKEE": "Y", "ZULU": "Z"
+        ]
+
+        for (word, letter) in phoneticLetters {
+            normalized = normalized.replacingOccurrences(of: word, with: letter)
+        }
+
+        return normalized
+    }
+
+    // MARK: - Manual Recording Mode
 
     func toggleRecording() async {
         switch state {
@@ -80,6 +241,8 @@ final class TranscriptionViewModel: ObservableObject {
             await startRecording()
         case .recording:
             await stopRecordingAndTranscribe()
+        case .listening:
+            stopListening()
         default:
             break
         }
@@ -115,30 +278,13 @@ final class TranscriptionViewModel: ObservableObject {
         }
     }
 
-    func transcribeWithTimestamps() async {
-        stopAudioLevelMonitoring()
-        let samples = audioService.stopRecording()
-
-        guard !samples.isEmpty else {
-            state = .ready
-            return
-        }
-
-        state = .transcribing
-
-        do {
-            let newSegments = try await whisperService.transcribeWithTimestamps(samples: samples)
-            segments = newSegments
-            transcribedText = newSegments.map { $0.text }.joined(separator: " ")
-            state = .ready
-        } catch {
-            state = .error(error.localizedDescription)
-        }
-    }
-
     func clearTranscription() {
         transcribedText = ""
         segments = []
+    }
+
+    func clearHistory() {
+        transcriptionHistory = []
     }
 
     private func startAudioLevelMonitoring() {
@@ -147,7 +293,6 @@ final class TranscriptionViewModel: ObservableObject {
                 guard let self = self else { return }
                 let buffer = self.audioService.getCurrentBuffer()
                 if !buffer.isEmpty {
-                    // Calculate RMS for audio level
                     let rms = sqrt(buffer.suffix(1600).map { $0 * $0 }.reduce(0, +) / Float(min(buffer.count, 1600)))
                     self.audioLevel = min(1.0, rms * 10)
                 }
@@ -159,5 +304,20 @@ final class TranscriptionViewModel: ObservableObject {
         audioLevelTimer?.invalidate()
         audioLevelTimer = nil
         audioLevel = 0
+    }
+}
+
+// MARK: - Models
+
+struct TranscriptionEntry: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let tailNumber: String
+    let transcription: String
+
+    var formattedTime: String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        return formatter.string(from: timestamp)
     }
 }

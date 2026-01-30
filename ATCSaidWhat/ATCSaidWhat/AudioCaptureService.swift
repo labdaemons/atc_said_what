@@ -88,6 +88,28 @@ final class AudioCaptureService {
         return currentBuffer
     }
 
+    /// Get the last N seconds of audio from the buffer
+    /// - Parameter seconds: Number of seconds of audio to retrieve
+    /// - Returns: Audio samples for the specified duration
+    func getRecentAudio(seconds: Double) -> [Float] {
+        let sampleCount = Int(Self.sampleRate * seconds)
+        bufferLock.lock()
+        let samples = Array(audioBuffer.suffix(sampleCount))
+        bufferLock.unlock()
+        return samples
+    }
+
+    /// Trim the buffer to keep only the last N seconds
+    /// - Parameter seconds: Number of seconds to keep
+    func trimBuffer(keepingLast seconds: Double) {
+        let sampleCount = Int(Self.sampleRate * seconds)
+        bufferLock.lock()
+        if audioBuffer.count > sampleCount {
+            audioBuffer = Array(audioBuffer.suffix(sampleCount))
+        }
+        bufferLock.unlock()
+    }
+
     func clearBuffer() {
         bufferLock.lock()
         audioBuffer.removeAll()

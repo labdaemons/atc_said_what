@@ -2,15 +2,23 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = TranscriptionViewModel()
+    @FocusState private var isTailNumberFocused: Bool
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                // Status indicator
-                StatusView(state: viewModel.state)
+            VStack(spacing: 20) {
+                // Tail number input
+                TailNumberInputView(
+                    tailNumber: $viewModel.tailNumber,
+                    isFocused: $isTailNumberFocused,
+                    isEnabled: viewModel.state == .ready
+                )
 
-                // Audio level indicator (shown when recording)
-                if viewModel.state == .recording {
+                // Status indicator
+                StatusView(state: viewModel.state, tailNumber: viewModel.tailNumber)
+
+                // Audio level indicator
+                if viewModel.state == .listening || viewModel.state == .recording || viewModel.state == .keywordDetected {
                     AudioLevelView(level: viewModel.audioLevel)
                         .frame(height: 8)
                         .padding(.horizontal)
@@ -18,13 +26,26 @@ struct ContentView: View {
                 }
 
                 // Transcription display
-                TranscriptionTextView(text: viewModel.transcribedText)
+                TranscriptionTextView(
+                    text: viewModel.transcribedText,
+                    history: viewModel.transcriptionHistory
+                )
 
                 Spacer()
 
                 // Control buttons
                 ControlButtonsView(
                     state: viewModel.state,
+                    tailNumber: viewModel.tailNumber,
+                    onStartListening: {
+                        isTailNumberFocused = false
+                        Task {
+                            await viewModel.startListening()
+                        }
+                    },
+                    onStopListening: {
+                        viewModel.stopListening()
+                    },
                     onToggleRecording: {
                         Task {
                             await viewModel.toggleRecording()
@@ -32,6 +53,7 @@ struct ContentView: View {
                     },
                     onClear: {
                         viewModel.clearTranscription()
+                        viewModel.clearHistory()
                     }
                 )
             }
@@ -42,8 +64,55 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Tail Number Input
+
+struct TailNumberInputView: View {
+    @Binding var tailNumber: String
+    var isFocused: FocusState<Bool>.Binding
+    let isEnabled: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Your Callsign / Tail Number")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Image(systemName: "airplane")
+                    .foregroundStyle(.secondary)
+
+                TextField("N12345", text: $tailNumber)
+                    .textFieldStyle(.plain)
+                    .font(.title2.monospaced())
+                    .textCase(.uppercase)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.characters)
+                    .focused(isFocused)
+                    .disabled(!isEnabled)
+
+                if !tailNumber.isEmpty {
+                    Button {
+                        tailNumber = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .disabled(!isEnabled)
+                }
+            }
+            .padding()
+            .background(Color(.systemGray6))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .opacity(isEnabled ? 1 : 0.6)
+        }
+    }
+}
+
+// MARK: - Status View
+
 struct StatusView: View {
     let state: TranscriptionState
+    let tailNumber: String
 
     var body: some View {
         HStack(spacing: 8) {
@@ -51,7 +120,13 @@ struct StatusView: View {
                 .fill(statusColor)
                 .frame(width: 12, height: 12)
                 .overlay {
-                    if state == .recording {
+                    if state == .listening {
+                        Circle()
+                            .stroke(statusColor.opacity(0.5), lineWidth: 2)
+                            .scaleEffect(1.8)
+                            .opacity(0.6)
+                            .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: state)
+                    } else if state == .recording || state == .keywordDetected {
                         Circle()
                             .stroke(Color.red.opacity(0.5), lineWidth: 2)
                             .scaleEffect(1.5)
@@ -75,6 +150,10 @@ struct StatusView: View {
             return .orange
         case .ready:
             return .green
+        case .listening:
+            return .blue
+        case .keywordDetected:
+            return .purple
         case .recording:
             return .red
         case .transcribing:
@@ -84,6 +163,8 @@ struct StatusView: View {
         }
     }
 }
+
+// MARK: - Audio Level View
 
 struct AudioLevelView: View {
     let level: Float
@@ -112,24 +193,61 @@ struct AudioLevelView: View {
     }
 }
 
+// MARK: - Transcription Text View
+
 struct TranscriptionTextView: View {
     let text: String
+    let history: [TranscriptionEntry]
 
     var body: some View {
         ScrollView {
-            if text.isEmpty {
-                Text("Tap the microphone button to start recording.\nSpeak clearly and tap again to transcribe.")
-                    .font(.body)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-                    .padding()
-            } else {
-                Text(text)
-                    .font(.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 16) {
+                if text.isEmpty && history.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "waveform.badge.mic")
+                            .font(.largeTitle)
+                            .foregroundStyle(.tertiary)
+
+                        Text("Enter your callsign above and tap 'Start Listening' to monitor for ATC communications.")
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+                } else {
+                    // Current transcription
+                    if !text.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Latest Transcription")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Text(text)
+                                .font(.body)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(Color.blue.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    // History
+                    if !history.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("History")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            ForEach(history) { entry in
+                                TranscriptionHistoryRow(entry: entry)
+                            }
+                        }
+                    }
+                }
             }
+            .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemGray6))
@@ -137,61 +255,140 @@ struct TranscriptionTextView: View {
     }
 }
 
+struct TranscriptionHistoryRow: View {
+    let entry: TranscriptionEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(entry.tailNumber)
+                    .font(.caption.bold())
+                    .foregroundStyle(.blue)
+
+                Spacer()
+
+                Text(entry.formattedTime)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Text(entry.transcription)
+                .font(.callout)
+                .textSelection(.enabled)
+        }
+        .padding(12)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - Control Buttons View
+
 struct ControlButtonsView: View {
     let state: TranscriptionState
+    let tailNumber: String
+    let onStartListening: () -> Void
+    let onStopListening: () -> Void
     let onToggleRecording: () -> Void
     let onClear: () -> Void
 
     var body: some View {
-        HStack(spacing: 32) {
-            // Clear button
-            Button(action: onClear) {
-                Image(systemName: "trash")
-                    .font(.title2)
-                    .frame(width: 56, height: 56)
-                    .background(Color(.systemGray5))
-                    .clipShape(Circle())
-            }
-            .disabled(state != .ready)
-            .opacity(state == .ready ? 1 : 0.5)
-
-            // Record button
-            Button(action: onToggleRecording) {
-                ZStack {
-                    Circle()
-                        .fill(recordButtonColor)
-                        .frame(width: 80, height: 80)
-
-                    if state == .recording {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(.white)
-                            .frame(width: 28, height: 28)
-                    } else {
-                        Image(systemName: "mic.fill")
-                            .font(.title)
-                            .foregroundStyle(.white)
+        VStack(spacing: 16) {
+            // Primary action button (Start/Stop Listening)
+            if state == .listening || state == .keywordDetected {
+                Button(action: onStopListening) {
+                    HStack {
+                        Image(systemName: "stop.fill")
+                        Text("Stop Listening")
                     }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.red)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .disabled(state == .keywordDetected)
+                .opacity(state == .keywordDetected ? 0.6 : 1)
+            } else if state == .ready && !tailNumber.isEmpty {
+                Button(action: onStartListening) {
+                    HStack {
+                        Image(systemName: "ear.fill")
+                        Text("Start Listening for \(tailNumber)")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.blue)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
-            .disabled(!canRecord)
-            .opacity(canRecord ? 1 : 0.5)
-            .scaleEffect(state == .recording ? 1.1 : 1.0)
-            .animation(.easeInOut(duration: 0.2), value: state)
 
-            // Copy button
-            Button(action: copyToClipboard) {
-                Image(systemName: "doc.on.doc")
-                    .font(.title2)
-                    .frame(width: 56, height: 56)
-                    .background(Color(.systemGray5))
-                    .clipShape(Circle())
+            // Secondary controls
+            HStack(spacing: 24) {
+                // Clear button
+                Button(action: onClear) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "trash")
+                            .font(.title2)
+                            .frame(width: 50, height: 50)
+                            .background(Color(.systemGray5))
+                            .clipShape(Circle())
+                        Text("Clear")
+                            .font(.caption2)
+                    }
+                }
+                .disabled(state != .ready)
+                .opacity(state == .ready ? 1 : 0.5)
+
+                // Manual record button
+                Button(action: onToggleRecording) {
+                    VStack(spacing: 4) {
+                        ZStack {
+                            Circle()
+                                .fill(recordButtonColor)
+                                .frame(width: 64, height: 64)
+
+                            if state == .recording {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(.white)
+                                    .frame(width: 24, height: 24)
+                            } else {
+                                Image(systemName: "mic.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        Text(state == .recording ? "Stop" : "Manual")
+                            .font(.caption2)
+                    }
+                }
+                .disabled(!canManualRecord)
+                .opacity(canManualRecord ? 1 : 0.5)
+                .scaleEffect(state == .recording ? 1.05 : 1.0)
+                .animation(.easeInOut(duration: 0.2), value: state)
+
+                // Copy button
+                Button(action: copyToClipboard) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.title2)
+                            .frame(width: 50, height: 50)
+                            .background(Color(.systemGray5))
+                            .clipShape(Circle())
+                        Text("Copy")
+                            .font(.caption2)
+                    }
+                }
+                .disabled(state != .ready)
+                .opacity(state == .ready ? 1 : 0.5)
             }
-            .disabled(state != .ready)
-            .opacity(state == .ready ? 1 : 0.5)
+            .foregroundStyle(.primary)
         }
     }
 
-    private var canRecord: Bool {
+    private var canManualRecord: Bool {
         state == .ready || state == .recording
     }
 
@@ -200,7 +397,7 @@ struct ControlButtonsView: View {
         case .recording:
             return .red
         case .ready:
-            return .blue
+            return .orange
         default:
             return .gray
         }
